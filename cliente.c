@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
 	memset(&(serveraddr), 0, sizeof(serveraddr));
     serveraddr.sin_family = AF_INET;
     inet_pton(AF_INET, argv[1], &serveraddr.sin_addr.s_addr);
-	serveraddr.sin_port = htons(8080);
+	serveraddr.sin_port = htons(8087);
    
     if(connect(client, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1) {
     	perror("socket() error!");

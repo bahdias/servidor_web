@@ -7,146 +7,130 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#define MAX_THREADS 4
-#define BUFFER_SIZE 4096
-#define QUEUE_SIZE 10 // Tamanho máximo da fila
+#define MAX_TRDS 4
+#define BUF_SIZE 4096
+#define Q_SIZE 10 
 
-// Estrutura para armazenar os argumentos da thread
 typedef struct {
     int sock;
-} thread_arg_t;
+} t_arg;
 
-// Estrutura da fila de tarefas
 typedef struct {
-    int sockets[QUEUE_SIZE];
-    int front;
-    int rear;
-    int count;
-    pthread_mutex_t lock;
-    pthread_cond_t notEmpty;
+    int socks[Q_SIZE];
+    int start;
+    int end;
+    int num;
+    pthread_mutex_t mut;
+    pthread_cond_t notEmp;
     pthread_cond_t notFull;
-} socket_queue_t;
+} t_queue;
 
-socket_queue_t queue;
+t_queue q;
 
-void error(const char *msg) {
+void boo(const char *msg) {
     perror(msg);
     exit(1);
 }
 
-void queue_init(socket_queue_t *q) {
-    q->front = 0;
-    q->rear = -1;
-    q->count = 0;
-    pthread_mutex_init(&q->lock, NULL);
-    pthread_cond_init(&q->notEmpty, NULL);
-    pthread_cond_init(&q->notFull, NULL);
+void initQ(t_queue *que) {
+    que->start = 0;
+    que->end = -1;
+    que->num = 0;
+    pthread_mutex_init(&que->mut, NULL);
+    pthread_cond_init(&que->notEmp, NULL);
+    pthread_cond_init(&que->notFull, NULL);
 }
 
-void queue_push(socket_queue_t *q, int socket) {
-    pthread_mutex_lock(&q->lock);
-    while (q->count == QUEUE_SIZE) {
-        pthread_cond_wait(&q->notFull, &q->lock);
+void addQ(t_queue *que, int sock) {
+    pthread_mutex_lock(&que->mut);
+    while (que->num == Q_SIZE) {
+        pthread_cond_wait(&que->notFull, &que->mut);
     }
-    q->rear = (q->rear + 1) % QUEUE_SIZE;
-    q->sockets[q->rear] = socket;
-    q->count++;
-    pthread_cond_signal(&q->notEmpty);
-    pthread_mutex_unlock(&q->lock);
+    que->end = (que->end + 1) % Q_SIZE;
+    que->socks[que->end] = sock;
+    que->num++;
+    pthread_cond_signal(&que->notEmp);
+    pthread_mutex_unlock(&que->mut);
 }
 
-int queue_pop(socket_queue_t *q) {
-    pthread_mutex_lock(&q->lock);
-    while (q->count == 0) {
-        pthread_cond_wait(&q->notEmpty, &q->lock);
+int getQ(t_queue *que) {
+    pthread_mutex_lock(&que->mut);
+    while (que->num == 0) {
+        pthread_cond_wait(&que->notEmp, &que->mut);
     }
-    int socket = q->sockets[q->front];
-    q->front = (q->front + 1) % QUEUE_SIZE;
-    q->count--;
-    pthread_cond_signal(&q->notFull);
-    pthread_mutex_unlock(&q->lock);
-    return socket;
+    int sock = que->socks[que->start];
+    que->start = (que->start + 1) % Q_SIZE;
+    que->num--;
+    pthread_cond_signal(&que->notFull);
+    pthread_mutex_unlock(&que->mut);
+    return sock;
 }
 
-void handle_http_request(int sockfd) {
-    char buffer[BUFFER_SIZE];
-    bzero(buffer, BUFFER_SIZE);
+void procReq(int sock) {
+    char buf[BUF_SIZE];
+    memset(buf, 0, BUF_SIZE);
+    ssize_t n = read(sock, buf, BUF_SIZE - 1);
+    if (n < 0) boo("ERROR reading from socket");
 
-    ssize_t n = read(sockfd, buffer, BUFFER_SIZE - 1);
-    if (n < 0) error("ERROR reading from socket");
+    buf[n] = '\0'; 
+    printf("Got this request:\n%s\n", buf);
 
-    printf("Here is the message:\n%s\n", buffer);
+    char *resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "<html><head><title>Hey</title></head><body><h1>Hi!</h1></body></html>";
 
-    if (strncmp(buffer, "GET ", 4) == 0) {
-        const char *response =
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/html\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "<html>"
-            "<head><title>Server Response</title></head>"
-            "<body><h1>Hello, World!</h1></body>"
-            "</html>";
-
-        n = write(sockfd, response, strlen(response));
-        if (n < 0) error("ERROR writing to socket");
-    }
+    n = write(sock, resp, strlen(resp));
+    if (n < 0) boo("ERROR writing to socket");
 }
 
-void *worker_thread(void *arg) {
+void *thdFunc(void *arg) {
     while (1) {
-        int sock = queue_pop(&queue);
-        handle_http_request(sock);
+        int sock = getQ(&q);
+        procReq(sock);
         close(sock);
     }
     return NULL;
 }
 
 int main(int argc, char *argv[]) {
-    int sockfd, portno;
-    socklen_t clilen;
+    int sock, newsock, portno;
     struct sockaddr_in serv_addr, cli_addr;
-    pthread_t threads[MAX_THREADS];
+    pthread_t trds[MAX_TRDS];
 
     if (argc < 2) {
-        fprintf(stderr, "ERROR, no port provided\n");
+        fprintf(stderr, "Need port number\n");
         exit(1);
     }
 
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) error("ERROR opening socket");
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) boo("ERROR opening socket");
 
-    bzero((char *)&serv_addr, sizeof(serv_addr));
+    memset(&serv_addr, 0, sizeof(serv_addr));
     portno = atoi(argv[1]);
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(portno);
 
-    if (bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) 
-        error("ERROR on binding");
+    if (bind(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) boo("ERROR on binding");
 
-    listen(sockfd, 5);
-    clilen = sizeof(cli_addr);
+    listen(sock, 5);
 
-    // Inicialização da fila
-    queue_init(&queue);
+    initQ(&q);
 
-    // Criação das threads trabalhadoras
-    for (int i = 0; i < MAX_THREADS; i++) {
-        if (pthread_create(&threads[i], NULL, worker_thread, NULL)) {
-            error("ERROR creating thread");
-        }
+    for (int i = 0; i < MAX_TRDS; i++) {
+        if (pthread_create(&trds[i], NULL, thdFunc, NULL)) boo("ERROR creating thread");
     }
 
     while (1) {
-        int newsockfd = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen);
-        if (newsockfd < 0) error("ERROR on accept");
+        newsock = accept(sock, (struct sockaddr *)&cli_addr, &portno);
+        if (newsock < 0) boo("ERROR on accept");
 
-        // Adicionando o novo socket à fila
-        queue_push(&queue, newsockfd);
+        addQ(&q, newsock);
     }
 
-    // Fechar o socket do servidor (não alcançado neste exemplo)
-    close(sockfd);
-    return 0; // Nem este será alcançado
+    close(sock);
+    return 0;
 }
