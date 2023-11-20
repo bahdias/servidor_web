@@ -7,6 +7,20 @@
 #include <unistd.h>
 
 #define PORT 8080
+#define FILE_PATH "image.jpg"
+
+void send_response(int client_socket, int status, const char *status_text, const char *content_type, const char *content, long content_length) {
+    char response[1024];
+
+    // Construa a resposta HTTP com cabeçalhos adicionais
+    sprintf(response, "HTTP/1.1 %d %s\r\nAccept-Ranges: bytes\r\nContent-Length: %ld\r\nContent-Type: %s\r\n\r\n%s", status, status_text, content_length, content_type, content);
+
+    // Envie os cabeçalhos para o cliente
+    send(client_socket, response, strlen(response), 0);
+
+    // Envie o conteúdo do arquivo para o cliente
+    send(client_socket, content, content_length, 0);
+}
 
 int main() {
     int server_socket, client_socket;
@@ -64,18 +78,47 @@ int main() {
             if (bytes_received < 0) {
                 perror("Erro ao receber dados do cliente");
             } else {
-                sleep(60);
-                // Analise a requisição HTTP aqui
-                request[bytes_received] = '\0'; // Garanta que a string seja terminada corretamente
+                request[bytes_received] = '\0';
 
-                // Exemplo de análise da requisição
-                char method[10], url[100], version[20], host[100];
-                if (sscanf(request, "%s %s %s\r\nHost: %s", method, url, version, host) == 4) {
+                char method[10], url[100], version[20];
+                if (sscanf(request, "%s %s %s\r\n", method, url, version) == 3) {
                     printf("Método HTTP: %s\n", method);
                     printf("URL: %s\n", url);
                     printf("Versão HTTP: %s\n", version);
-                    printf("Host: %s\n", host);
-                } else {
+
+                    // Verifique se a URL solicitada é a esperada
+                    if (strcmp(url, "/image.jpg") == 0) {
+                        FILE *file = fopen(FILE_PATH, "rb");
+                        if (file) {
+                            fseek(file, 0, SEEK_END);
+                            long file_size = ftell(file);
+                            fseek(file, 0, SEEK_SET);
+
+                            char *file_content = (char *)malloc(file_size);
+                            if (!file_content) {
+                                perror("Erro ao alocar memória para o conteúdo do arquivo");
+                                fclose(file);
+                                send_response(client_socket, 500, "Internal Server Error", "text/html", "500 Internal Server Error", 0);
+                                continue;
+                            }
+
+                            fread(file_content, 1, file_size, file);
+                            fclose(file);
+
+                            // Envie uma resposta de sucesso (200) com o conteúdo do arquivo
+                            send_response(client_socket, 200, "OK", "image/jpeg", file_content, file_size);
+
+                            free(file_content);
+                        } else {
+                            // Envie uma resposta de erro (404) se o arquivo não puder ser aberto
+                            perror("Erro ao abrir o arquivo");
+                            send_response(client_socket, 404, "Not Found", "text/html", "404 Not Found", 0);
+                        }
+                    } else {
+                        // Envie uma resposta de erro (404) se a URL solicitada não for reconhecida
+                        send_response(client_socket, 404, "Not Found", "text/html", "404 Not Found", 0);
+                    }
+                }else {
                     printf("Requisição inválida.\n");
                 }
             }
