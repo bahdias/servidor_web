@@ -12,12 +12,6 @@
 #define QUEUE_SIZE 10
 #define FILE_PATH "image.jpg"
 
-// Estrutura para armazenar os argumentos da thread
-typedef struct {
-    int sock;
-} thread_arg_t;
-
-// Estrutura da fila de tarefas
 typedef struct {
     int sockets[QUEUE_SIZE];
     int front;
@@ -69,53 +63,65 @@ int queue_pop(socket_queue_t *q) {
     return socket;
 }
 
-void send_response(int client_socket, int status, const char *status_text, const char *content_type, const char *content, long content_length) {
-    char header[1024];
-
-    sprintf(header, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %ld\r\nConnection: close\r\n\r\n", status, status_text, content_type, content_length);
+void send_response(int client_socket, const char *header, const char *content, long content_length) {
     send(client_socket, header, strlen(header), 0);
     send(client_socket, content, content_length, 0);
-}
-
-void handle_http_request(int sockfd) {
-    char buffer[BUFFER_SIZE];
-    bzero(buffer, BUFFER_SIZE);
-
-    ssize_t n = read(sockfd, buffer, BUFFER_SIZE - 1);
-    if (n < 0) error("ERROR reading from socket");
-
-    printf("Here is the message:\n%s\n", buffer);
-
-    // Assumindo que a requisição é para "GET /image.jpg"
-    char method[10], url[100], version[20];
-    if (sscanf(buffer, "%s %s %s", method, url, version) == 3) {
-        if (strcmp(url, "/image.jpg") == 0) {
-            // Apenas para simplificar, suponha que o arquivo "image.jpg" exista e tenha 1KB
-            char *file_content = "Fake image content";
-            long file_size = strlen(file_content); // Deve ser o tamanho real do arquivo
-
-            send_response(sockfd, 200, "OK", "image/jpeg", file_content, file_size);
-        } else {
-            // URL não reconhecida
-            send_response(sockfd, 404, "Not Found", "text/html", "404 Not Found", strlen("404 Not Found"));
-        }
-    } else {
-        // Requisição HTTP inválida
-        send_response(sockfd, 400, "Bad Request", "text/html", "400 Bad Request", strlen("400 Bad Request"));
-    }
 }
 
 void *worker_thread(void *arg) {
     while (1) {
         int sock = queue_pop(&queue);
-        handle_http_request(sock);
+
+        char buffer[BUFFER_SIZE];
+        memset(buffer, 0, BUFFER_SIZE);
+        ssize_t n = read(sock, buffer, BUFFER_SIZE - 1);
+        if (n < 0) {
+            error("ERROR reading from socket");
+        } else {
+            buffer[n] = '\0'; 
+            printf("Here is the message:\n%s\n", buffer);
+
+            char method[10], url[100], version[20];
+            if (sscanf(buffer, "%s %s %s", method, url, version) == 3) {
+                if (strcmp(url, "/image.jpg") == 0) {
+                    FILE *file = fopen(FILE_PATH, "rb");
+                    if (file) {
+                        fseek(file, 0, SEEK_END);
+                        long file_size = ftell(file);
+                        fseek(file, 0, SEEK_SET);
+
+                        char *file_content = (char *)malloc(file_size);
+                        if (!file_content) {
+                            error("Failed to allocate memory for file content");
+                        }
+
+                        fread(file_content, 1, file_size, file);
+                        fclose(file);
+
+                        char header[1024];
+                        sprintf(header, "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nContent-Length: %ld\r\nContent-Type: image/jpeg\r\n\r\n", file_size);
+                        send_response(sock, header, file_content, file_size);
+
+                        free(file_content);
+                    } else {
+                        error("File not found");
+                    }
+                } else {
+                    char *response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 13\r\nConnection: close\r\n\r\n404 Not Found";
+                    send(sock, response, strlen(response), 0);
+                }
+            } else {
+                error("Invalid HTTP request");
+            }
+        }
+
         close(sock);
     }
     return NULL;
 }
 
 int main(int argc, char *argv[]) {
-    int sockfd, newsockfd, portno;
+    int sockfd, portno;
     socklen_t clilen;
     struct sockaddr_in serv_addr, cli_addr;
     pthread_t threads[MAX_THREADS];
@@ -128,14 +134,13 @@ int main(int argc, char *argv[]) {
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) error("ERROR opening socket");
 
-    bzero((char *)&serv_addr, sizeof(serv_addr));
+    memset(&serv_addr, 0, sizeof(serv_addr));
     portno = atoi(argv[1]);
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(portno);
 
-    if (bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) 
-        error("ERROR on binding");
+    if (bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) error("ERROR on binding");
 
     listen(sockfd, 5);
     clilen = sizeof(cli_addr);
@@ -143,13 +148,11 @@ int main(int argc, char *argv[]) {
     queue_init(&queue);
 
     for (int i = 0; i < MAX_THREADS; i++) {
-        if (pthread_create(&threads[i], NULL, worker_thread, NULL)) {
-            error("ERROR creating thread");
-        }
+        if (pthread_create(&threads[i], NULL, worker_thread, NULL)) error("ERROR creating thread");
     }
 
     while (1) {
-        newsockfd = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen);
+        int newsockfd = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen);
         if (newsockfd < 0) error("ERROR on accept");
 
         queue_push(&queue, newsockfd);
