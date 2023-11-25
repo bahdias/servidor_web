@@ -8,8 +8,8 @@
 #include <netinet/in.h>
 
 #define MAX_THREADS 4
-#define BUFFER_SIZE 4096
-#define QUEUE_SIZE 10
+#define BUFFER_SIZE 8192
+#define QUEUE_SIZE 100
 #define FILE_PATH "image.jpg"
 
 typedef struct {
